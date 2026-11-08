@@ -1,0 +1,226 @@
+-- Amer: ESP only | re-execute safe
+
+local env = (getgenv and getgenv()) or _G
+for _, k in ipairs({ "AmerUnload", "AmerAimUnload", "AmerESPUnload", "AmerGodUnload", "AmerMobileUnload", "AmerTestUnload", "AmerLiteUnload" }) do
+	if env[k] then pcall(env[k]) end
+end
+if not game:IsLoaded() then game.Loaded:Wait() end
+
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local UIS = game:GetService("UserInputService")
+local Workspace = game:GetService("Workspace")
+
+local me = Players.LocalPlayer
+while not me do task.wait() me = Players.LocalPlayer end
+
+-- ===== settings =====
+local MAX_DISTANCE = 3000
+local TEAM_CHECK   = true
+local INCLUDE_NPCS = true
+local ENEMY_COLOR  = Color3.fromRGB(255, 60, 60)
+local TEAM_COLOR   = Color3.fromRGB(60, 255, 120)
+local ON_COLOR     = Color3.fromRGB(46, 160, 67)
+local OFF_COLOR    = Color3.fromRGB(170, 50, 50)
+
+local connections = {}
+local function track(c) table.insert(connections, c) return c end
+
+-- ===== gui =====
+local gui = Instance.new("ScreenGui")
+gui.Name = "AmerLite"
+gui.ResetOnSpawn = false
+gui.IgnoreGuiInset = true
+gui.DisplayOrder = 999
+gui.Parent = me:WaitForChild("PlayerGui")
+
+local title = Instance.new("TextLabel")
+title.AnchorPoint = Vector2.new(0.5, 0)
+title.Position = UDim2.new(0.5, 0, 0, 20)
+title.Size = UDim2.fromOffset(300, 50)
+title.BackgroundTransparency = 1
+title.Text = "Amer"
+title.Font = Enum.Font.GothamBold
+title.TextSize = 40
+title.TextColor3 = Color3.new(1, 1, 1)
+title.Parent = gui
+
+local panel = Instance.new("Frame")
+panel.Size = UDim2.fromOffset(170, 96)
+panel.Position = UDim2.new(0, 12, 0.5, -48)
+panel.BackgroundColor3 = Color3.fromRGB(25, 25, 30)
+panel.BackgroundTransparency = 0.15
+panel.BorderSizePixel = 0
+panel.Parent = gui
+Instance.new("UICorner", panel).CornerRadius = UDim.new(0, 10)
+
+do -- drag panel (touch + mouse)
+	local dragging, ds, sp
+	track(panel.InputBegan:Connect(function(i)
+		if i.UserInputType == Enum.UserInputType.Touch or i.UserInputType == Enum.UserInputType.MouseButton1 then
+			dragging, ds, sp = true, i.Position, panel.Position
+		end
+	end))
+	track(UIS.InputChanged:Connect(function(i)
+		if dragging and (i.UserInputType == Enum.UserInputType.Touch or i.UserInputType == Enum.UserInputType.MouseMovement) then
+			local d = i.Position - ds
+			panel.Position = UDim2.new(sp.X.Scale, sp.X.Offset + d.X, sp.Y.Scale, sp.Y.Offset + d.Y)
+		end
+	end))
+	track(UIS.InputEnded:Connect(function(i)
+		if i.UserInputType == Enum.UserInputType.Touch or i.UserInputType == Enum.UserInputType.MouseButton1 then
+			dragging = false
+		end
+	end))
+end
+
+local espOn = false
+
+local btn = Instance.new("TextButton")
+btn.Size = UDim2.new(1, -16, 0, 40)
+btn.Position = UDim2.new(0, 8, 0, 8)
+btn.BackgroundColor3 = OFF_COLOR
+btn.TextColor3 = Color3.new(1, 1, 1)
+btn.Font = Enum.Font.GothamBold
+btn.TextSize = 16
+btn.Text = "ESP: OFF"
+btn.Parent = panel
+Instance.new("UICorner", btn).CornerRadius = UDim.new(0, 8)
+
+local status = Instance.new("TextLabel")
+status.Position = UDim2.new(0, 8, 0, 52)
+status.Size = UDim2.new(1, -16, 0, 38)
+status.BackgroundTransparency = 1
+status.Font = Enum.Font.Gotham
+status.TextSize = 12
+status.TextColor3 = Color3.new(1, 1, 1)
+status.TextWrapped = true
+status.Text = "scanning..."
+status.Parent = panel
+
+-- ===== ESP =====
+local boxes = {} -- [model] = { frame, stroke, label }
+
+local function clearAll()
+	for m, o in pairs(boxes) do o.frame:Destroy() boxes[m] = nil end
+end
+
+local function getBox(model)
+	local o = boxes[model]
+	if o then return o end
+	local f = Instance.new("Frame")
+	f.BackgroundTransparency = 1
+	f.BorderSizePixel = 0
+	f.Visible = false
+	f.Parent = gui
+	local s = Instance.new("UIStroke")
+	s.Thickness = 2
+	s.Color = ENEMY_COLOR
+	s.Parent = f
+	local l = Instance.new("TextLabel")
+	l.AnchorPoint = Vector2.new(0.5, 1)
+	l.Position = UDim2.new(0.5, 0, 0, -2)
+	l.Size = UDim2.fromOffset(180, 30)
+	l.BackgroundTransparency = 1
+	l.Font = Enum.Font.GothamBold
+	l.TextSize = 12
+	l.TextColor3 = ENEMY_COLOR
+	l.TextStrokeTransparency = 0.4
+	l.Parent = f
+	o = { frame = f, stroke = s, label = l }
+	boxes[model] = o
+	return o
+end
+
+local targets = {}
+local function scan()
+	local list, np, nn = {}, 0, 0
+	for _, d in ipairs(Workspace:GetDescendants()) do
+		if d:IsA("Humanoid") and d.Health > 0 and d.Parent ~= me.Character then
+			local model = d.Parent
+			local plr = Players:GetPlayerFromCharacter(model)
+			if plr or INCLUDE_NPCS then
+				local root = model:FindFirstChild("HumanoidRootPart") or model:FindFirstChild("Torso")
+					or model:FindFirstChild("UpperTorso") or model:FindFirstChildWhichIsA("BasePart")
+				if root then
+					list[#list + 1] = { model = model, hum = d, root = root, plr = plr }
+					if plr then np += 1 else nn += 1 end
+				end
+			end
+		end
+	end
+	targets = list
+	status.Text = string.format("targets: %d\nplayers: %d | npc: %d", #list, np, nn)
+end
+
+local running = true
+task.spawn(function()
+	while running do
+		local ok, err = pcall(scan)
+		if not ok then status.Text = "scan err: " .. tostring(err) end
+		task.wait(0.5)
+	end
+end)
+
+local function toggle()
+	espOn = not espOn
+	btn.Text = "ESP: " .. (espOn and "ON" or "OFF")
+	btn.BackgroundColor3 = espOn and ON_COLOR or OFF_COLOR
+	if not espOn then clearAll() end
+end
+track(btn.Activated:Connect(toggle))
+track(UIS.InputBegan:Connect(function(i, gp)
+	if not gp and i.KeyCode == Enum.KeyCode.F1 then toggle() end
+end))
+
+local function step()
+	if not espOn then return end
+	local cam = Workspace.CurrentCamera
+	local myRoot = me.Character and me.Character:FindFirstChild("HumanoidRootPart")
+	local seen = {}
+
+	for _, t in ipairs(targets) do
+		local root = t.root
+		if root.Parent and t.hum.Health > 0 then
+			seen[t.model] = true
+			local o = getBox(t.model)
+			local pos = root.Position
+			local dist = (pos - (myRoot and myRoot.Position or cam.CFrame.Position)).Magnitude
+			local top = cam:WorldToViewportPoint(pos + Vector3.new(0, 3, 0))
+			local bot = cam:WorldToViewportPoint(pos - Vector3.new(0, 3.2, 0))
+			if dist > MAX_DISTANCE or top.Z <= 0 or bot.Z <= 0 then
+				o.frame.Visible = false
+			else
+				local h = math.max(math.abs(bot.Y - top.Y), 8)
+				local w = h * 0.55
+				o.frame.Size = UDim2.fromOffset(w, h)
+				o.frame.Position = UDim2.fromOffset(top.X - w / 2, top.Y)
+				local mate = TEAM_CHECK and t.plr and t.plr.Team ~= nil and t.plr.Team == me.Team
+				local col = mate and TEAM_COLOR or ENEMY_COLOR
+				o.stroke.Color = col
+				o.label.TextColor3 = col
+				o.label.Text = string.format("%s\n%d HP | %dm", t.model.Name, math.floor(t.hum.Health), math.floor(dist))
+				o.frame.Visible = true
+			end
+		end
+	end
+
+	for m, o in pairs(boxes) do
+		if not seen[m] then o.frame:Destroy() boxes[m] = nil end
+	end
+end
+
+RunService:BindToRenderStep("AmerLiteESP", Enum.RenderPriority.Camera.Value + 2, function()
+	local ok, err = pcall(step)
+	if not ok then status.Text = "render err: " .. tostring(err) end
+end)
+
+-- ===== unload =====
+env.AmerLiteUnload = function()
+	running = false
+	pcall(function() RunService:UnbindFromRenderStep("AmerLiteESP") end)
+	for _, c in ipairs(connections) do pcall(function() c:Disconnect() end) end
+	clearAll()
+	pcall(function() gui:Destroy() end)
+	env.AmerLiteUnload = nil
+end
